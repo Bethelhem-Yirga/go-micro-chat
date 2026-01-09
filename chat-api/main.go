@@ -11,6 +11,7 @@ import (
 
     "gorm.io/driver/postgres"
     "gorm.io/gorm"
+	"time"
 )
 
 // Message model
@@ -19,6 +20,7 @@ type Message struct {
     Room     string `json:"room"`
     Username string `json:"username"`
     Content  string `json:"content"`
+    CreatedAt time.Time `json:"created_at"` // new timestamp
 }
 
 // ✅ CORS helper MUST be outside main
@@ -53,15 +55,15 @@ func main() {
     service.Init()
 
     // Routes
-    http.HandleFunc("/send", sendHandler(b))
-    http.HandleFunc("/history", historyHandler(db))
+   http.HandleFunc("/send", sendHandler(b, db))
+http.HandleFunc("/history", historyHandler(db))
+
 
     log.Println("Chat API running on :8080")
     log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-// POST /send
-func sendHandler(b broker.Broker) http.HandlerFunc {
+func sendHandler(b broker.Broker, db *gorm.DB) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         enableCORS(w)
 
@@ -80,17 +82,24 @@ func sendHandler(b broker.Broker) http.HandlerFunc {
             return
         }
 
+        // Save message to database
+        if err := db.Create(&body).Error; err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Publish to NATS (optional for other subscribers)
         msg := body.Username + ": " + body.Content
         if err := broker.Publish(body.Room, &broker.Message{
             Body: []byte(msg),
         }); err != nil {
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return
+            log.Println("Publish error:", err)
         }
 
         w.WriteHeader(http.StatusOK)
     }
 }
+
 
 // GET /history?room=room1
 func historyHandler(db *gorm.DB) http.HandlerFunc {
@@ -104,9 +113,10 @@ func historyHandler(db *gorm.DB) http.HandlerFunc {
         room := r.URL.Query().Get("room")
         var messages []Message
 
-        db.Where("room = ?", room).
-            Order("id asc").
-            Find(&messages)
+       db.Where("room = ?", room).
+    Order("created_at asc"). // ensures chronological order
+    Find(&messages)
+
 
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(messages)
